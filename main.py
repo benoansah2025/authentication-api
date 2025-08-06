@@ -11,7 +11,7 @@
 from fastapi import FastAPI, HTTPException, status, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+# from typing import List, Optional
 import logging
 from datetime import timedelta
 
@@ -363,42 +363,72 @@ async def get_user_by_username(
 @app.delete("/users/{user_id}", response_model=APIResponse, tags=["Users"])
 async def delete_user(
     user_id: int,
-    db: DatabaseConnection = Depends(get_db_connection),
-    current_user: dict = Depends(get_current_user)
+            db: DatabaseConnection = Depends(get_db_connection),
+            current_user: dict = Depends(get_current_user)
 ):
     """Delete a user (requires authentication)"""
     try:
         user_service = UserService(db)
         
-        # Check if user exists
-        existing_user = user_service.get_user_by_id(user_id)
-        if not existing_user:
+        # Get current user info for authorization
+        current_user_data = user_service.get_user_by_username(current_user["username"])
+        if not current_user_data:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user session"
+            )
+        
+        # Authorization check: users can only delete their own account
+        if current_user_data["id"] != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only delete your own account"
+            )
+        
+        # Call delete_user with only user_id (matching your original method signature)
+        deleted = user_service.delete_user(user_id,requesting_user_id=user_id)  # Only 2 args: self, user_id
+        
+        if deleted:
+            return APIResponse(
+                success=True,
+                message="User deleted successfully",
+                data={"deleted_user_id": user_id}
+            )
+        else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-            
-        # Check if user has permission (only allow users to delete their own account)
-        if current_user["sub"] != existing_user["username"]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to delete this user"
-            )
-            
-        user_service.delete_user(user_id)
-        return APIResponse(
-            success=True,
-            message="User deleted successfully",
-            data=None
-        )
         
     except HTTPException:
+        # Re-raise HTTP exceptions as-is
         raise
+    
+    except ValueError as e:
+        # Handle validation and business logic errors
+        error_message = str(e)
+        
+        if "not found" in error_message.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_message
+            )
+        elif "cannot delete" in error_message.lower() or "associated data" in error_message.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=error_message
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_message
+            )
+    
     except Exception as e:
-        logger.error(f"Error deleting user: {e}")
+        logger.error(f"Unexpected error deleting user {user_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
+            detail="Internal server error occurred while deleting user"
         )
 
 @app.post("/auth/refresh-token", response_model=dict, tags=["Authentication"])
